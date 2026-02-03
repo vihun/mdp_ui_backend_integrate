@@ -390,6 +390,15 @@ class MainViewModel(
         sendAddObstacle(toObstacleId(id), x, y)
     }
 
+    fun previewMoveObstacle(id: Int, x: Int, y: Int) {
+        updateLocalObstacle(
+            obstacleId = toObstacleId(id),
+            x = x,
+            y = y,
+            add = true
+        )
+    }
+
     fun removeObstacle(id: Int) {
         sendRemoveObstacle(toObstacleId(id))
     }

@@ -20,6 +20,9 @@ class ArenaView @JvmOverloads constructor(
         fun onCellTap(x: Int, y: Int)
         fun onObstacleTap(obstacleId: Int)
         fun onObstacleDrag(obstacleId: Int, x: Int, y: Int)
+
+        fun onObstacleDrop(obstacleId: Int, x: Int, y: Int) // NEW: send on finger lift
+
         fun onObstacleRemove(obstacleId: Int)
     }
 
@@ -229,7 +232,11 @@ class ArenaView @JvmOverloads constructor(
                     val endY = cell.second
 
                     if (!moved && startX != null && startY != null && startX == endX && startY == endY) {
+                        // Treat as tap
                         listener?.onObstacleTap(id)
+                    } else {
+                        // Treat as drop final position (send x,y once finger lifts)
+                        listener?.onObstacleDrop(id, endX, endY)
                     }
                     return true
                 }

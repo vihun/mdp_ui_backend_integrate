@@ -62,7 +62,11 @@ class ArenaFragment : Fragment() {
             }
 
             override fun onObstacleDrag(obstacleId: Int, x: Int, y: Int) {
-                viewModel.placeOrMoveObstacle(obstacleId, x, y)
+                viewModel.previewMoveObstacle(obstacleId, x, y)
+            }
+
+            override fun onObstacleDrop(obstacleId: Int, x: Int, y: Int) {
+                viewModel.placeOrMoveObstacle(obstacleId, x, y) // transmit here
             }
 
             override fun onObstacleRemove(obstacleId: Int) {
