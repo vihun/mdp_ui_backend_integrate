@@ -10,7 +10,7 @@ import com.google.android.material.bottomnavigation.BottomNavigationView
 
 class MainActivity : AppCompatActivity() {
 
-    private val bt by lazy { BluetoothManager() }
+    private val bt by lazy { BluetoothManager(applicationContext) }
     private val vmFactory by lazy { MainViewModelFactory(bt) }
     val viewModel: MainViewModel by viewModels { vmFactory }
 

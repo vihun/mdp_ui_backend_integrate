@@ -16,7 +16,7 @@ import kotlinx.coroutines.flow.update
  *
  * MDP ARCM Checklist mapping:
  * - C.1: Bluetooth transmit/receive (via send* methods and state.log)
- * - C.2: Device scanning/selection (via connectToDevice, getPairedDevices)
+ * - C.2: Device scanning/selection (via connectToDevice, getPairedDevices, startScan)
  * - C.3: Robot movement (via sendMoveForward, sendTurnLeft, etc.)
  * - C.4: Status display (via state.statusText)
  * - C.5: Arena display (via state.arena)
@@ -38,6 +38,8 @@ class MainViewModel(
 
     init {
         bt.onEvent = { ev -> handleBluetoothEvent(ev) }
+        // Populate paired list immediately so Connect UI isn't empty at first launch
+        refreshPairedDevices()
     }
 
     /** Start listening for incoming connections (server mode) */
@@ -57,6 +59,28 @@ class MainViewModel(
         bt.connect(device)
     }
 
+    fun connectToAddress(address: String) {
+        // 1) Try paired devices first (most stable)
+        val pairedMatch = try {
+            bt.getPairedDevices().firstOrNull { it.address == address }
+        } catch (_: SecurityException) {
+            null
+        }
+        if (pairedMatch != null) {
+            bt.connect(pairedMatch)
+            return
+        }
+
+        // 2) Try discovered (scanned) devices
+        val discoveredMatch = bt.getDiscoveredDevices().firstOrNull { it.address == address }
+        if (discoveredMatch != null) {
+            bt.connect(discoveredMatch)
+            return
+        }
+
+        appendLog(LogEntry.Kind.ERROR, "CONNECT failed: device not found ($address)")
+    }
+
     /** Get list of paired Bluetooth devices */
     fun getPairedDevices(): List<android.bluetooth.BluetoothDevice> {
         return bt.getPairedDevices()
@@ -68,14 +92,109 @@ class MainViewModel(
     /** Check if Bluetooth is enabled */
     fun isBluetoothEnabled(): Boolean = bt.isEnabled()
 
-    fun sendMoveForward() = send(Outgoing.MoveForward)
-    fun sendMoveBackward() = send(Outgoing.MoveBackward)
-    fun sendTurnLeft() = send(Outgoing.TurnLeft)
-    fun sendTurnRight() = send(Outgoing.TurnRight)
+    // -------------------------------------------------------------------------
+    // Preetish-style local simulation: always update UI immediately,
+    // only send BT command if connected.
+    // -------------------------------------------------------------------------
 
-    fun sendMoveForward(steps: Int) = send(Outgoing.MoveForwardSteps(steps))
-    fun sendMoveBackward(steps: Int) = send(Outgoing.MoveBackwardSteps(steps))
-    fun sendTurnDegrees(degrees: Int) = send(Outgoing.TurnDegrees(degrees))
+    private fun isConnected(): Boolean =
+        _state.value.conn == BluetoothManager.State.CONNECTED
+
+    private fun clampToArena(x: Int, y: Int): Pair<Int, Int> {
+        val arena = _state.value.arena
+        if (arena == null) return x to y
+        val cx = x.coerceIn(0, arena.width - 1)
+        val cy = y.coerceIn(0, arena.height - 1)
+        return cx to cy
+    }
+
+    private fun simulateForward(steps: Int = 1) {
+        _state.update { s ->
+            val r = s.robot ?: return@update s
+            val (dx, dy) = when (r.robotDirection) {
+                RobotDirection.NORTH -> 0 to 1
+                RobotDirection.EAST -> 1 to 0
+                RobotDirection.SOUTH -> 0 to -1
+                RobotDirection.WEST -> -1 to 0
+            }
+            val (nx, ny) = clampToArena(r.x + dx * steps, r.y + dy * steps)
+            s.copy(robot = r.copy(x = nx, y = ny))
+        }
+    }
+
+    private fun simulateBackward(steps: Int = 1) {
+        _state.update { s ->
+            val r = s.robot ?: return@update s
+            val (dx, dy) = when (r.robotDirection) {
+                RobotDirection.NORTH -> 0 to -1
+                RobotDirection.EAST -> -1 to 0
+                RobotDirection.SOUTH -> 0 to 1
+                RobotDirection.WEST -> 1 to 0
+            }
+            val (nx, ny) = clampToArena(r.x + dx * steps, r.y + dy * steps)
+            s.copy(robot = r.copy(x = nx, y = ny))
+        }
+    }
+
+    private fun simulateTurnLeft() {
+        _state.update { s ->
+            val r = s.robot ?: return@update s
+            val newDeg = (r.directionDeg + 270) % 360
+            s.copy(robot = r.copy(directionDeg = newDeg))
+        }
+    }
+
+    private fun simulateTurnRight() {
+        _state.update { s ->
+            val r = s.robot ?: return@update s
+            val newDeg = (r.directionDeg + 90) % 360
+            s.copy(robot = r.copy(directionDeg = newDeg))
+        }
+    }
+
+    // Movement API (UI calls these)
+    fun sendMoveForward() {
+        simulateForward(1)
+        if (isConnected()) send(Outgoing.MoveForward) else appendLog(LogEntry.Kind.INFO, "SIM MOVE,F")
+    }
+
+    fun sendMoveBackward() {
+        simulateBackward(1)
+        if (isConnected()) send(Outgoing.MoveBackward) else appendLog(LogEntry.Kind.INFO, "SIM MOVE,B")
+    }
+
+    fun sendTurnLeft() {
+        simulateTurnLeft()
+        if (isConnected()) send(Outgoing.TurnLeft) else appendLog(LogEntry.Kind.INFO, "SIM TURN,L")
+    }
+
+    fun sendTurnRight() {
+        simulateTurnRight()
+        if (isConnected()) send(Outgoing.TurnRight) else appendLog(LogEntry.Kind.INFO, "SIM TURN,R")
+    }
+
+    fun sendMoveForward(steps: Int) {
+        val s = steps.coerceAtLeast(1)
+        simulateForward(s)
+        if (isConnected()) send(Outgoing.MoveForwardSteps(s)) else appendLog(LogEntry.Kind.INFO, "SIM MOVE,F $s")
+    }
+
+    fun sendMoveBackward(steps: Int) {
+        val s = steps.coerceAtLeast(1)
+        simulateBackward(s)
+        if (isConnected()) send(Outgoing.MoveBackwardSteps(s)) else appendLog(LogEntry.Kind.INFO, "SIM MOVE,B $s")
+    }
+
+    fun sendTurnDegrees(degrees: Int) {
+        // Local preview for common angles; still sends raw degrees if connected
+        val d = ((degrees % 360) + 360) % 360
+        when (d) {
+            90 -> simulateTurnRight()
+            180 -> { simulateTurnRight(); simulateTurnRight() }
+            270 -> simulateTurnLeft()
+        }
+        if (isConnected()) send(Outgoing.TurnDegrees(degrees)) else appendLog(LogEntry.Kind.INFO, "SIM TURN $degrees")
+    }
 
     /**
      * Add obstacle at position (x, y) with given ID.
@@ -83,8 +202,28 @@ class MainViewModel(
      */
     fun sendAddObstacle(obstacleId: String, x: Int, y: Int) {
         send(Outgoing.AddObstacle(obstacleId, x, y))
-        // Update local state
         updateLocalObstacle(obstacleId, x, y, add = true)
+    }
+
+    // -------------------------------------------------------------------------
+    // Bluetooth scanning support (TM8 merge)
+    // -------------------------------------------------------------------------
+
+    fun refreshPairedDevices() {
+        val paired = bt.getPairedDevices().map { it.toBtDevice(bonded = true) }
+        _state.update { it.copy(pairedDevices = paired) }
+    }
+
+    fun startScan() {
+        refreshPairedDevices()
+        _state.update { it.copy(scannedDevices = emptyList(), isScanning = true) }
+        bt.clearDiscoveredDevices()
+        bt.startDiscovery()
+    }
+
+    fun stopScan() {
+        bt.stopDiscovery()
+        _state.update { it.copy(isScanning = false) }
     }
 
     /**
@@ -103,7 +242,6 @@ class MainViewModel(
      */
     fun sendRemoveObstacle(obstacleId: String) {
         send(Outgoing.RemoveObstacle(obstacleId))
-        // Update local state - find and remove obstacle
         removeLocalObstacle(obstacleId)
     }
 
@@ -112,7 +250,6 @@ class MainViewModel(
      */
     fun sendSetObstacleFace(obstacleId: String, face: RobotDirection) {
         send(Outgoing.SetObstacleFace(obstacleId, face))
-        // Update local state
         updateLocalObstacleFace(obstacleId, face)
     }
 
@@ -238,8 +375,6 @@ class MainViewModel(
 
     // -------------------------------------------------------------------------
     // UI adapter methods (for your ArenaView/ArenaFragment)
-    // Convert UI (Int id + Facing) -> HX protocol ("B1" + RobotDirection)
-    // These call existing HX send* methods (which also update local arena).
     // -------------------------------------------------------------------------
 
     private fun toObstacleId(id: Int): String = "B$id"
@@ -271,6 +406,31 @@ class MainViewModel(
 
     private fun handleBluetoothEvent(ev: BluetoothManager.Event) {
         when (ev) {
+
+            // -----------------------------
+            // Scan events (TM8 merge)
+            // -----------------------------
+            is BluetoothManager.Event.DiscoveryStarted -> {
+                appendLog(LogEntry.Kind.INFO, ev.message ?: "Scanning...")
+                _state.update { it.copy(isScanning = true, scannedDevices = emptyList()) }
+            }
+
+            is BluetoothManager.Event.DeviceFound -> {
+                val d = ev.device.toBtDevice(bonded = false)
+                _state.update { s ->
+                    if (s.scannedDevices.any { it.address == d.address }) s
+                    else s.copy(scannedDevices = s.scannedDevices + d)
+                }
+            }
+
+            is BluetoothManager.Event.DiscoveryFinished -> {
+                appendLog(LogEntry.Kind.INFO, "Scan finished (${ev.foundCount})")
+                _state.update { it.copy(isScanning = false) }
+            }
+
+            // -----------------------------
+            // Existing Bluetooth events
+            // -----------------------------
             is BluetoothManager.Event.StateChanged -> {
                 _state.update {
                     it.copy(
@@ -312,42 +472,23 @@ class MainViewModel(
 
     private fun handleIncomingLine(line: String) {
         when (val msg = ProtocolParser.parse(line)) {
-            // C.10: Robot position update
             is Incoming.RobotPosition -> handleRobotPosition(msg)
-
-            // C.9: Target detection
             is Incoming.TargetDetected -> handleTargetDetected(msg)
-
-            // C.4: Status message
             is Incoming.StatusUpdate -> handleStatusUpdate(msg)
-
-            // Arena updates
             is Incoming.GridHex -> handleGridHex(msg)
             is Incoming.GridBinary -> handleGridBinary(msg)
             is Incoming.ArenaResize -> handleArenaResize(msg)
-
-            // Obstacle updates (echoed from AMD Tool)
             is Incoming.ObstacleUpdate -> handleObstacleUpdate(msg)
             is Incoming.ObstacleRemoved -> handleObstacleRemoved(msg)
-
-            // Path execution
             is Incoming.PathSequence -> handlePathSequence(msg)
             is Incoming.PathStep -> handlePathStep(msg)
             is Incoming.PathComplete -> handlePathComplete()
             is Incoming.PathAbort -> handlePathAbort()
-
-            // Sync request
             is Incoming.RequestSync -> handleRequestSync()
-
-            // Raw/unrecognized
             is Incoming.Raw -> { /* Already logged */ }
         }
     }
 
-    /**
-     * C.10: Handle robot position update.
-     * Format: "ROBOT,<x>,<y>,<direction>"
-     */
     private fun handleRobotPosition(msg: Incoming.RobotPosition) {
         _state.update { s ->
             s.copy(
@@ -362,17 +503,10 @@ class MainViewModel(
         }
     }
 
-    /**
-     * C.9: Handle target detection.
-     * Format: "TARGET,<obstacle>,<targetId>[,<face>]"
-     * Updates the obstacle block to display the target ID.
-     */
     private fun handleTargetDetected(msg: Incoming.TargetDetected) {
         _state.update { s ->
-            // Find the obstacle in the arena and update its imageId
             val arena = s.arena ?: return@update s
 
-            // Search for the obstacle by ID and update it
             val updatedCells = arena.cells.mapIndexed { _, cell ->
                 val cellObstacleId = cell.obstacleId?.toString() ?: ""
                 if (cell.isObstacle && (cellObstacleId == msg.obstacleId || "B$cellObstacleId" == msg.obstacleId)) {
@@ -399,7 +533,6 @@ class MainViewModel(
                 detections = detections,
                 lastDetection = detection
             )
-
         }
 
         appendLog(
@@ -408,10 +541,6 @@ class MainViewModel(
         )
     }
 
-    /**
-     * C.4: Handle status update message.
-     * Format: "MSG,[status text]"
-     */
     private fun handleStatusUpdate(msg: Incoming.StatusUpdate) {
         _state.update { it.copy(statusText = msg.message) }
     }
@@ -527,7 +656,6 @@ class MainViewModel(
 
             val numericId = obstacleId.removePrefix("B").toIntOrNull()
 
-            // 1) Clear any previous cell that already has this obstacleId (enforce uniqueness)
             val clearedCells = if (numericId != null) {
                 arena0.cells.map { cell ->
                     if (cell.obstacleId == numericId) {
@@ -540,7 +668,6 @@ class MainViewModel(
 
             val arenaCleared = arena0.copy(cells = clearedCells)
 
-            // 2) Place/update obstacle at new location
             val cell = arenaCleared.getCell(x, y)
             val arena1 = arenaCleared.withCell(
                 x, y,
@@ -557,8 +684,6 @@ class MainViewModel(
             )
         }
     }
-
-
 
     private fun removeLocalObstacle(obstacleId: String) {
         _state.update { s ->
@@ -579,7 +704,6 @@ class MainViewModel(
             )
         }
     }
-
 
     private fun updateLocalObstacleFace(obstacleId: String, face: RobotDirection) {
         _state.update { s ->
@@ -611,15 +735,13 @@ class MainViewModel(
 
             val facing = when (cell.targetDirection) {
                 RobotDirection.NORTH -> Facing.N
-                RobotDirection.EAST  -> Facing.E
+                RobotDirection.EAST -> Facing.E
                 RobotDirection.SOUTH -> Facing.S
-                RobotDirection.WEST  -> Facing.W
+                RobotDirection.WEST -> Facing.W
                 null -> null
             }
 
-            // imageId in your Cell is used as "target id" when TARGET arrives
             val targetId: Int? = cell.imageId?.toIntOrNull()
-
 
             out.add(
                 ObstacleState(
@@ -634,8 +756,6 @@ class MainViewModel(
 
         return out.sortedBy { it.id }
     }
-
-
 
     private fun directionToDegrees(dir: RobotDirection): Int = when (dir) {
         RobotDirection.NORTH -> 0
@@ -672,6 +792,18 @@ class MainViewModel(
         return out
     }
 
+    // -------------------------------------------------------------------------
+    // Helper: BluetoothDevice -> BtDevice (for UI lists)
+    // -------------------------------------------------------------------------
+    private fun android.bluetooth.BluetoothDevice.toBtDevice(bonded: Boolean? = null): BtDevice {
+        val safeName = try { name } catch (_: SecurityException) { null }
+        val safeAddr = try { address } catch (_: SecurityException) { "unknown" }
+        val isBonded = bonded ?: (bondState == android.bluetooth.BluetoothDevice.BOND_BONDED)
 
-
+        return BtDevice(
+            name = safeName,
+            address = safeAddr,
+            bonded = isBonded
+        )
+    }
 }

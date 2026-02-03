@@ -5,8 +5,14 @@ import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothServerSocket
 import android.bluetooth.BluetoothSocket
+import android.content.Context
+import android.content.BroadcastReceiver
+import android.content.Intent
+import android.content.IntentFilter
+import android.os.Build
 
-class BluetoothManager {
+
+class BluetoothManager(private val appCtx: Context) {
 
     enum class Mode { NONE, SERVER, CLIENT }
     enum class State { DISCONNECTED, LISTENING, CONNECTING, CONNECTED }
@@ -21,11 +27,21 @@ class BluetoothManager {
         data class EchoReceived(val line: String) : Event()
         data class SendRejected(val reason: SendRejectReason, val message: String? = null) : Event()
         data class Log(val message: String) : Event()
+
+        data class DiscoveryStarted(val message: String? = null) : Event()
+
+        data class DeviceFound(val label: String, val device: BluetoothDevice) : Event()
+
+        data class DiscoveryFinished(val foundCount: Int) : Event()
+
     }
 
     var onEvent: ((Event) -> Unit)? = null
 
     private val adapter: BluetoothAdapter? = BluetoothAdapter.getDefaultAdapter()
+
+    private val context = appCtx.applicationContext
+    private val discovered = LinkedHashMap<String, BluetoothDevice>()
 
     @Volatile var mode: Mode = Mode.NONE
         private set
@@ -270,4 +286,90 @@ class BluetoothManager {
     private fun safeClose(s: BluetoothSocket?) {
         try { s?.close() } catch (_: Exception) {}
     }
+
+    @Volatile private var discoveryActive = false
+
+    private val discoveryReceiver = object : BroadcastReceiver() {
+        @SuppressLint("MissingPermission")
+        override fun onReceive(ctx: Context, intent: Intent) {
+            when (intent.action) {
+                BluetoothAdapter.ACTION_DISCOVERY_STARTED -> {
+                    discoveryActive = true
+                    onEvent?.invoke(Event.DiscoveryStarted("Scanning for nearby devices..."))
+                }
+                BluetoothDevice.ACTION_FOUND -> {
+                    val device: BluetoothDevice? =
+                        if (Build.VERSION.SDK_INT >= 33)
+                            intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+                        else
+                            @Suppress("DEPRECATION")
+                            intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+
+                    if (device != null) {
+                        val key = device.address
+                        if (!discovered.containsKey(key)) {
+                            discovered[key] = device
+                            onEvent?.invoke(Event.DeviceFound(device.name ?: device.address, device))
+                        }
+                    }
+                }
+                BluetoothAdapter.ACTION_DISCOVERY_FINISHED -> {
+                    discoveryActive = false
+                    safeUnregisterDiscoveryReceiver()
+                    onEvent?.invoke(Event.DiscoveryFinished(discovered.size))
+                }
+            }
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    fun startDiscovery() {
+        val a = adapter ?: run { onEvent?.invoke(Event.Log("Bluetooth not supported")); return }
+        if (!a.isEnabled) { onEvent?.invoke(Event.Log("Bluetooth disabled")); return }
+
+        if (state == State.CONNECTED || state == State.CONNECTING) {
+            onEvent?.invoke(Event.SendRejected(SendRejectReason.BUSY, "Cannot scan while $state"))
+            return
+        }
+
+        discovered.clear()
+
+        if (a.isDiscovering) { try { a.cancelDiscovery() } catch (_: Exception) {} }
+
+        val filter = IntentFilter().apply {
+            addAction(BluetoothAdapter.ACTION_DISCOVERY_STARTED)
+            addAction(BluetoothDevice.ACTION_FOUND)
+            addAction(BluetoothAdapter.ACTION_DISCOVERY_FINISHED)
+        }
+
+        try { context.registerReceiver(discoveryReceiver, filter) } catch (_: Exception) {}
+
+        discoveryActive = true
+        val started = try { a.startDiscovery() } catch (_: Exception) { false }
+        if (!started) {
+            discoveryActive = false
+            safeUnregisterDiscoveryReceiver()
+            onEvent?.invoke(Event.Log("startDiscovery() failed"))
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    fun stopDiscovery() {
+        val a = adapter ?: return
+        if (a.isDiscovering) { try { a.cancelDiscovery() } catch (_: Exception) {} }
+        discoveryActive = false
+        safeUnregisterDiscoveryReceiver()
+    }
+
+    private fun safeUnregisterDiscoveryReceiver() {
+        try { context.unregisterReceiver(discoveryReceiver) } catch (_: Exception) {}
+    }
+
+    fun clearDiscoveredDevices() {
+        discovered.clear()
+    }
+
+    fun getDiscoveredDevices(): List<BluetoothDevice> =
+        discovered.values.toList()
+
 }

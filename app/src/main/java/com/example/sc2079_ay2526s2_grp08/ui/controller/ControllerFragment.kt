@@ -9,6 +9,8 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import com.example.sc2079_ay2526s2_grp08.MainActivity
 import com.example.sc2079_ay2526s2_grp08.R
+import com.example.sc2079_ay2526s2_grp08.domain.ArenaState
+import com.example.sc2079_ay2526s2_grp08.domain.RobotDirection
 import com.example.sc2079_ay2526s2_grp08.ui.arena.ArenaView
 import kotlinx.coroutines.launch
 
@@ -21,32 +23,40 @@ class ControllerFragment : Fragment(R.layout.fragment_controller) {
 
         val arenaView = view.findViewById<ArenaView>(R.id.arenaView) ?: return
 
+        // ✅ Ensure arena + robot exist (Preetish-style: always have a robot to move)
+        val s0 = viewModel.state.value
+        if (s0.arena == null) {
+            viewModel.initializeArena(ArenaState.DEFAULT_WIDTH, ArenaState.DEFAULT_HEIGHT)
+        }
+        if (s0.robot == null) {
+            // Pick a safe default inside arena. Change to whatever you prefer.
+            viewModel.setLocalRobotPosition(1, 1, RobotDirection.NORTH)
+        }
+
         // Observe shared robot state and render it
         viewLifecycleOwner.lifecycleScope.launch {
             viewLifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
                 viewModel.state.collect { s ->
                     s.robot?.let { arenaView.setRobotPosition(it.x, it.y) }
+                    arenaView.setObstacleBlocks(s.obstacleBlocks)   // ✅ ADD THIS
                 }
             }
         }
+
 
         // Buttons send commands via ViewModel (single source of truth)
         view.findViewById<Button>(R.id.btnForward)?.setOnClickListener {
             viewModel.sendMoveForward()
         }
-
         view.findViewById<Button>(R.id.btnBack)?.setOnClickListener {
             viewModel.sendMoveBackward()
         }
-
         view.findViewById<Button>(R.id.btnLeft)?.setOnClickListener {
             viewModel.sendTurnLeft()
         }
-
         view.findViewById<Button>(R.id.btnRight)?.setOnClickListener {
             viewModel.sendTurnRight()
         }
-
         view.findViewById<Button>(R.id.btnStop)?.setOnClickListener {
             viewModel.sendRaw("STOP")
         }

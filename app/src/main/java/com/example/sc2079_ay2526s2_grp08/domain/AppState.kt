@@ -210,6 +210,10 @@ data class LogEntry(
 data class AppState(
     val mode: BluetoothManager.Mode = BluetoothManager.Mode.NONE,
     val conn: BluetoothManager.State = BluetoothManager.State.DISCONNECTED,
+    val pairedDevices: List<BtDevice> = emptyList(),
+    val scannedDevices: List<BtDevice> = emptyList(),
+    val isScanning: Boolean = false,
+
     val statusText: String? = null,
 
     val robot: RobotState? = null,

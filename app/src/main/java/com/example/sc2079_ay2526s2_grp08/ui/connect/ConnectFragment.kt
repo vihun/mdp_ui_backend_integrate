@@ -16,6 +16,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import com.example.sc2079_ay2526s2_grp08.MainViewModel
 import com.example.sc2079_ay2526s2_grp08.R
+import com.example.sc2079_ay2526s2_grp08.domain.BtDevice
 import kotlinx.coroutines.launch
 
 class ConnectFragment : Fragment(R.layout.fragment_connect) {
@@ -24,17 +25,28 @@ class ConnectFragment : Fragment(R.layout.fragment_connect) {
 
     private lateinit var tvStatus: TextView
     private lateinit var btnRefresh: Button
+    private lateinit var btnScan: Button
     private lateinit var spDevices: Spinner
     private lateinit var btnConnect: Button
     private lateinit var btnDisconnect: Button
     private lateinit var btnSendTest: Button
     private lateinit var tvLog: TextView
 
+    // Keep your original paired BluetoothDevice list (still useful)
     private var paired: List<BluetoothDevice> = emptyList()
+
+    // NEW: what the spinner is currently showing (paired OR scanned)
+    private var shown: List<BtDevice> = emptyList()
+
+    // We need to know if we are requesting scan perms or just connect perms
+    private var pendingAction: (() -> Unit)? = null
 
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { _ ->
-            refreshPairedDevices()
+            // After permission dialog, run whatever action user intended
+            val action = pendingAction
+            pendingAction = null
+            action?.invoke()
         }
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
@@ -42,6 +54,7 @@ class ConnectFragment : Fragment(R.layout.fragment_connect) {
 
         tvStatus = view.findViewById(R.id.tvStatus)
         btnRefresh = view.findViewById(R.id.btnRefreshPaired)
+        btnScan = view.findViewById(R.id.btnScan) // ✅ requires you to add this button in XML
         spDevices = view.findViewById(R.id.spDevices)
         btnConnect = view.findViewById(R.id.btnConnect)
         btnDisconnect = view.findViewById(R.id.btnDisconnect)
@@ -49,18 +62,28 @@ class ConnectFragment : Fragment(R.layout.fragment_connect) {
         tvLog = view.findViewById(R.id.tvLog)
 
         btnRefresh.setOnClickListener {
-            ensureBtPermissionsThen { refreshPairedDevices() }
+            ensureBtPermissionsThen(scan = false) { refreshPairedDevices() }
+        }
+
+        btnScan.setOnClickListener {
+            ensureBtPermissionsThen(scan = true) {
+                vm.startScan()
+                // Keep paired list fresh too (good UX)
+                refreshPairedDevices()
+            }
         }
 
         btnConnect.setOnClickListener {
-            ensureBtPermissionsThen {
+            ensureBtPermissionsThen(scan = false) {
                 val idx = spDevices.selectedItemPosition
-                val device = paired.getOrNull(idx)
-                if (device == null) {
+                val picked = shown.getOrNull(idx)
+                if (picked == null) {
                     toast("No device selected")
                     return@ensureBtPermissionsThen
                 }
-                vm.connectToDevice(device)
+
+                vm.connectToAddress(picked.address)
+
             }
         }
 
@@ -69,11 +92,10 @@ class ConnectFragment : Fragment(R.layout.fragment_connect) {
         }
 
         btnSendTest.setOnClickListener {
-            // quick sanity test for C.1 (outgoing)
             vm.sendRaw("MOVE,F")
         }
 
-        // Observe state (Status + Log)
+        // Observe state (Status + Log + update spinner list)
         viewLifecycleOwner.lifecycleScope.launch {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
                 vm.state.collect { s ->
@@ -84,8 +106,28 @@ class ConnectFragment : Fragment(R.layout.fragment_connect) {
                             append(" — ")
                             append(it)
                         }
+                        if (s.isScanning) {
+                            append(" — Scanning...")
+                        }
                     }
                     tvStatus.text = statusLine
+
+                    // ✅ Choose what to show in spinner:
+                    // Prefer scanned devices if any, otherwise paired devices from AppState
+                    shown = if (s.scannedDevices.isNotEmpty()) s.scannedDevices else s.pairedDevices
+
+                    val labels = if (shown.isEmpty()) {
+                        listOf("(no devices)")
+                    } else {
+                        shown.map { it.label }
+                    }
+
+                    val adapter = ArrayAdapter(
+                        requireContext(),
+                        android.R.layout.simple_spinner_dropdown_item,
+                        labels
+                    )
+                    spDevices.adapter = adapter
 
                     // Show last ~200 log lines to avoid UI lag
                     val logs = s.log.takeLast(200).joinToString("\n") { e ->
@@ -97,7 +139,7 @@ class ConnectFragment : Fragment(R.layout.fragment_connect) {
         }
 
         // Initial load
-        ensureBtPermissionsThen { refreshPairedDevices() }
+        ensureBtPermissionsThen(scan = false) { refreshPairedDevices() }
     }
 
     private fun refreshPairedDevices() {
@@ -107,32 +149,32 @@ class ConnectFragment : Fragment(R.layout.fragment_connect) {
         }
         if (!vm.isBluetoothEnabled()) {
             toast("Bluetooth is OFF — turn it on first")
-            // We can still show paired list on some phones, but connect will fail
         }
 
         paired = try {
             vm.getPairedDevices()
         } catch (e: SecurityException) {
-            // If user denied permissions
             emptyList()
         }
 
-        val labels = if (paired.isEmpty()) {
-            listOf("(no paired devices)")
-        } else {
-            paired.map { d -> "${d.name ?: "Unknown"}\n${d.address}" }
-        }
-
-        val adapter = ArrayAdapter(requireContext(), android.R.layout.simple_spinner_dropdown_item, labels)
-        spDevices.adapter = adapter
+        // Update VM state list too (so spinner can show paired list even if no scan)
+        vm.refreshPairedDevices()
     }
 
-    private fun ensureBtPermissionsThen(onGranted: () -> Unit) {
+    /**
+     * scan=false: only BLUETOOTH_CONNECT on Android 12+ (paired list + connect)
+     * scan=true : include scan permission (Android 12+) OR location (Android <12)
+     */
+    private fun ensureBtPermissionsThen(scan: Boolean, onGranted: () -> Unit) {
         val needed = mutableListOf<String>()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            // Android 12+ requires BLUETOOTH_CONNECT for paired devices + connect
+            // Android 12+
             needed += Manifest.permission.BLUETOOTH_CONNECT
+            if (scan) needed += Manifest.permission.BLUETOOTH_SCAN
+        } else {
+            // Android 9/10/11 discovery often requires Location permission
+            if (scan) needed += Manifest.permission.ACCESS_FINE_LOCATION
         }
 
         val notGranted = needed.filter {
@@ -140,6 +182,7 @@ class ConnectFragment : Fragment(R.layout.fragment_connect) {
         }
 
         if (notGranted.isNotEmpty()) {
+            pendingAction = onGranted
             permissionLauncher.launch(notGranted.toTypedArray())
             return
         }

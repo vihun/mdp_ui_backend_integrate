@@ -37,7 +37,8 @@ class ArenaFragment : Fragment() {
 
         fun setSelected(id: Int) {
             selectedId = id
-            tvSelected.text = "Obstacle: $id"
+            tvSelected.text = "Selected: Obs $id"
+
         }
 
         view.findViewById<Button>(R.id.btnObs1)?.setOnClickListener { setSelected(1) }
