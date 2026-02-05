@@ -201,8 +201,26 @@ class MainViewModel(
      * Also updates local arena state.
      */
     fun sendAddObstacle(obstacleId: String, x: Int, y: Int) {
+
+        if (!canPlaceObstacleAt(obstacleId, x, y)) {
+            appendLog(LogEntry.Kind.INFO, "REJECT ADD $obstacleId at ($x,$y): cell occupied")
+            return
+        }
+
         send(Outgoing.AddObstacle(obstacleId, x, y))
         updateLocalObstacle(obstacleId, x, y, add = true)
+    }
+
+    private fun canPlaceObstacleAt(obstacleId: String, x: Int, y: Int): Boolean {
+        val arena = _state.value.arena ?: return true
+        if (x !in 0 until arena.width || y !in 0 until arena.height) return false
+
+        val cell = arena.getCell(x, y)
+        if (!cell.isObstacle) return true
+
+        val numericId = obstacleId.removePrefix("B").toIntOrNull()
+        val occupiedBy = cell.obstacleId
+        return numericId != null && occupiedBy != null && occupiedBy == numericId
     }
 
     // -------------------------------------------------------------------------
@@ -664,6 +682,18 @@ class MainViewModel(
             if (x !in 0 until arena0.width || y !in 0 until arena0.height) return@update s
 
             val numericId = obstacleId.removePrefix("B").toIntOrNull()
+
+            if (add) {
+                val target = arena0.getCell(x, y)
+                val occupiedBy = target.obstacleId
+                val isOccupied = target.isObstacle && occupiedBy != null
+                if (isOccupied && numericId != null && occupiedBy != numericId) {
+                    return@update s
+                }
+                if (target.isObstacle && (occupiedBy == null || numericId == null) && obstacleId.isNotBlank()) {
+                    return@update s
+                }
+            }
 
             val clearedCells = if (numericId != null) {
                 arena0.cells.map { cell ->
