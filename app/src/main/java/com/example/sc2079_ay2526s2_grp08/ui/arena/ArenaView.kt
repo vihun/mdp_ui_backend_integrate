@@ -29,8 +29,7 @@ class ArenaView @JvmOverloads constructor(
     private var listener: Listener? = null
     fun setListener(l: Listener?) { listener = l }
 
-    private val gridSize = ArenaConfig.GRID_SIZE
-
+    private val gridSize: Int get() = ArenaConfig.GRID_WIDTH
     var robotX: Int = 1
         set(value) {
             field = value.coerceIn(1, gridSize - 2)

@@ -201,15 +201,18 @@ class MainViewModel(
      * Also updates local arena state.
      */
     fun sendAddObstacle(obstacleId: String, x: Int, y: Int) {
-
-        if (!canPlaceObstacleAt(obstacleId, x, y)) {
-            appendLog(LogEntry.Kind.INFO, "REJECT ADD $obstacleId at ($x,$y): cell occupied")
+        if (!canPlaceObstacleFootprint(obstacleId, x, y)) {
+            appendLog(
+                LogEntry.Kind.INFO,
+                "REJECT ADD $obstacleId at ($x,$y): footprint occupied/out of bounds"
+            )
             return
         }
 
         send(Outgoing.AddObstacle(obstacleId, x, y))
         updateLocalObstacle(obstacleId, x, y, add = true)
     }
+
 
     private fun canPlaceObstacleAt(obstacleId: String, x: Int, y: Int): Boolean {
         val arena = _state.value.arena ?: return true
@@ -222,6 +225,26 @@ class MainViewModel(
         val occupiedBy = cell.obstacleId
         return numericId != null && occupiedBy != null && occupiedBy == numericId
     }
+
+    private fun canPlaceObstacleFootprint(obstacleId: String, x: Int, y: Int): Boolean {
+        val arena = _state.value.arena ?: return false
+        val size = ArenaConfig.OBSTACLE_FOOTPRINT
+
+        // top-left anchor must allow full footprint to fit
+        if (x !in 0..(arena.width - size) || y !in 0..(arena.height - size)) return false
+
+        val numericId = obstacleId.removePrefix("B").toIntOrNull()
+
+        for (dy in 0 until size) for (dx in 0 until size) {
+            val cell = arena.getCell(x + dx, y + dy)
+            if (cell.isObstacle) {
+                // allow moving onto itself
+                if (numericId == null || cell.obstacleId != numericId) return false
+            }
+        }
+        return true
+    }
+
 
     // -------------------------------------------------------------------------
     // Bluetooth scanning support (TM8 merge)
@@ -707,15 +730,28 @@ class MainViewModel(
 
             val arenaCleared = arena0.copy(cells = clearedCells)
 
-            val cell = arenaCleared.getCell(x, y)
-            val arena1 = arenaCleared.withCell(
-                x, y,
-                cell.copy(
-                    isObstacle = add,
-                    obstacleId = if (add) numericId else null,
-                    targetDirection = if (add) (face ?: cell.targetDirection) else null
+            val size = ArenaConfig.OBSTACLE_FOOTPRINT
+
+            // If adding/moving, reject invalid footprint BEFORE any clearing/write
+            if (add && !canPlaceObstacleFootprint(obstacleId, x, y)) {
+                return@update s
+            }
+
+            var arena1 = arenaCleared
+            for (dy in 0 until size) for (dx in 0 until size) {
+                val cx = x + dx
+                val cy = y + dy
+                val cell = arena1.getCell(cx, cy)
+                arena1 = arena1.withCell(
+                    cx, cy,
+                    cell.copy(
+                        isObstacle = add,
+                        obstacleId = if (add) numericId else null,
+                        targetDirection = if (add) (face ?: cell.targetDirection) else null
+                    )
                 )
-            )
+            }
+
 
             s.copy(
                 arena = arena1,

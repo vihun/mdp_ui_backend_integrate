@@ -50,9 +50,22 @@ internal class BluetoothCommunicationService(
         Thread {
             try {
                 synchronized(writeLock) {
-                    os.write((toSend + "\n").toByteArray(Charsets.UTF_8))
+                    val clean = toSend.trim()
+                    if (clean.isEmpty()) return@synchronized
+
+                    // Movement tokens (single commands) — NO newline
+                    val isToken = clean.length <= 3 && !clean.contains(',')
+
+                    os.write(clean.toByteArray(Charsets.US_ASCII))
+
+                    // Structured protocol lines — add newline delimiter
+                    if (!isToken) {
+                        os.write('\n'.code)
+                    }
+
                     os.flush()
                 }
+
             } catch (e: Exception) {
                 onSendError?.invoke(e.message ?: e.javaClass.simpleName)
                 // Treat as session failure (remote may be gone)

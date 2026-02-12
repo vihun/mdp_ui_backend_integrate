@@ -138,8 +138,9 @@ data class ArenaState(
 
     companion object {
         /** Default arena dimensions */
-        const val DEFAULT_WIDTH = 20
-        const val DEFAULT_HEIGHT = 20
+        const val DEFAULT_WIDTH = ArenaConfig.GRID_WIDTH
+        const val DEFAULT_HEIGHT = ArenaConfig.GRID_HEIGHT
+
 
         fun empty(width: Int = DEFAULT_WIDTH, height: Int = DEFAULT_HEIGHT): ArenaState {
             return ArenaState(width, height, List(width * height) { Cell.EMPTY })

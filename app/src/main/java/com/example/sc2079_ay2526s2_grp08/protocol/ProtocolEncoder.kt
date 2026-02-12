@@ -16,7 +16,7 @@ object ProtocolEncoder {
     var cmdForward: String = "f"
 
     /** Command string for move backward (AMD Tool default: "b") */
-    var cmdBackward: String = "b"
+    var cmdBackward: String = "r"
 
     /** Command string for turn left (AMD Tool default: "sl") */
     var cmdTurnLeft: String = "sl"
